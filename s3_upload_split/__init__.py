@@ -62,6 +62,7 @@ def next_valid_data(iterable, matching_pattern, done=False):
         if pattern == matching_pattern:
             return data
 
+
 def handle_value(value):
     return value if value is None or type(value) in [str, int] else RE_TZ.sub('', str(value))
 
@@ -109,7 +110,6 @@ class thread(threading.Thread):
                     return 0  # indicate EOF
 
         return io.BufferedReader(IterStream(self.subscriber, self.pattern), buffer_size=buffer_size)
-
 
     def run(self):
         self.s3.upload_fileobj(self.iterable_to_stream(), self.bucket, self.filename)
