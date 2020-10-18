@@ -100,7 +100,7 @@ class thread(threading.Thread):
             def readinto(self, b):
                 try:
                     l = len(b)  # We're supposed to return at most this much
-                    chunk = self.leftover or self.next_chunk.encode()
+                    chunk = self.leftover or self.next_chunk().encode()
                     output, self.leftover = chunk[:l], chunk[l:]
                     b[:len(output)] = output
                     return len(output)
