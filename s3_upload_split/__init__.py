@@ -1,4 +1,4 @@
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 import io
 import os
@@ -9,8 +9,11 @@ import time
 import boto3
 import logging
 import threading
+import gzip
+import shutil
 
 from anypubsub import create_pubsub
+
 
 logger = logging.getLogger(__name__)
 RE_TZ = re.compile('\+00:00$')
@@ -24,14 +27,27 @@ def dict_to_str(record):
     return next(memory_file)
 
 
+def upload_stream(bucket, stream, key, gzipped=False):
+    opts = {}
+    fp = None
+    if gzipped:
+        fp = io.BytesIO()
+        with gzip.GzipFile(fileobj=fp, mode='wb') as gz:
+            shutil.copyfileobj(stream, gz)
+        fp.seek(0)
+        opts = dict(ContentEncoding='gzip')
+
+    boto3.resource('s3').Bucket(bucket).upload_fileobj(fp or stream, key, opts)
+
+
 class SplitUploadS3:
-    def __init__(self, bucket, key, regex, iterator):
-        self.bucket = bucket
+    def __init__(self, bucket, key, regex, iterator, gzipped=False):
         self.key = key
         self.regex = regex
         self.iterator = iterator
         self._patterns = dict()
-        self._s3 = boto3.client('s3')
+        self.bucket = bucket
+        self.gzipped = gzipped
 
     def handle_content(self):
         pubsub, channel = create_pubsub('memory'), "chan1"
@@ -40,7 +56,9 @@ class SplitUploadS3:
             if pattern not in self._patterns:
                 logger.debug("Adding thread for pattern %s", pattern)
                 json_output = os.path.join(self.key, f"data-{pattern}.json")
-                uploading_thread = thread(self._s3, pubsub, channel, pattern, self.bucket, json_output)
+                if self.gzipped:
+                    json_output += ".gz"
+                uploading_thread = thread(self.bucket, pubsub, channel, pattern, json_output, gzipped=self.gzipped)
                 self._patterns[pattern] = 1
                 uploading_thread.start()
             pubsub.publish(channel, (pattern, record))
@@ -76,13 +94,13 @@ def jsonize(dictionary):
 
 
 class thread(threading.Thread):
-    def __init__(self, s3, pubsub, channel, pattern, bucket, filename):
+    def __init__(self, bucket, pubsub, channel, pattern, filename, gzipped=False, content=None):
         threading.Thread.__init__(self)
-        self.s3 = s3
         self.subscriber = pubsub.subscribe(channel)
         self.pattern = pattern
         self.bucket = bucket
         self.filename = filename
+        self.gzipped = gzipped
 
     def iterable_to_stream(self, buffer_size=io.DEFAULT_BUFFER_SIZE):
         class IterStream(io.RawIOBase):
@@ -112,4 +130,4 @@ class thread(threading.Thread):
         return io.BufferedReader(IterStream(self.subscriber, self.pattern), buffer_size=buffer_size)
 
     def run(self):
-        self.s3.upload_fileobj(self.iterable_to_stream(), self.bucket, self.filename)
+        upload_stream(self.bucket, self.iterable_to_stream(), self.filename, gzipped=self.gzipped)
