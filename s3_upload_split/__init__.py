@@ -1,4 +1,4 @@
-__version__ = '0.1.2'
+__version__ = '0.1.3'
 
 import io
 import os
@@ -82,7 +82,7 @@ def next_valid_data(iterable, matching_pattern, done=False):
 
 
 def handle_value(value):
-    return value if value is None or type(value) in [str, int] else RE_TZ.sub('', str(value))
+    return value if value is None or type(value) in [str, int, dict] else RE_TZ.sub('', str(value))
 
 
 def stringify(data):
