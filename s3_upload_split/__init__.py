@@ -1,4 +1,4 @@
-__version__ = '0.1.3'
+__version__ = '0.1.4'
 
 import io
 import os
@@ -11,6 +11,7 @@ import logging
 import threading
 import gzip
 import shutil
+import tempfile
 
 from anypubsub import create_pubsub
 
@@ -31,7 +32,7 @@ def upload_stream(bucket, stream, key, gzipped=False):
     opts = {}
     fp = None
     if gzipped:
-        fp = io.BytesIO()
+        fp = tempfile.TemporaryFile()
         with gzip.GzipFile(fileobj=fp, mode='wb') as gz:
             shutil.copyfileobj(stream, gz)
         fp.seek(0)
