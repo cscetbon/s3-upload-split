@@ -1,5 +1,4 @@
-__version__ = '0.1.4'
-
+import importlib.metadata
 import io
 import os
 import re
@@ -16,8 +15,9 @@ import tempfile
 from anypubsub import create_pubsub
 
 
+__version__ = importlib.metadata.version("s3-upload-split")
 logger = logging.getLogger(__name__)
-RE_TZ = re.compile('\+00:00$')
+RE_TZ = re.compile(r'\+00:00$')
 
 
 def dict_to_str(record):
@@ -31,24 +31,38 @@ def dict_to_str(record):
 def upload_stream(bucket, stream, key, gzipped=False):
     opts = {}
     fp = None
+    resource_bucket = boto3.resource('s3').Bucket(bucket)
     if gzipped:
+        if not key.endswith(".gz"):
+            print("When using gzip compression key needs to end with .gz")
+            exit(1)
+
         fp = tempfile.TemporaryFile()
+        logger.debug("Compress stream received into tempfile")
+
         with gzip.GzipFile(fileobj=fp, mode='wb') as gz:
             shutil.copyfileobj(stream, gz)
+        logger.debug("Done with compressing")
         fp.seek(0)
         opts = dict(ContentEncoding='gzip')
 
-    boto3.resource('s3').Bucket(bucket).upload_fileobj(fp or stream, key, opts)
+    resource_bucket.upload_fileobj(fp or stream, key, opts)
+
+    if gzipped:
+        resource_bucket.delete_objects(
+            Delete={"Objects": [{'Key': key[:-3]}]}
+        )
 
 
 class SplitUploadS3:
-    def __init__(self, bucket, key, regex, iterator, gzipped=False):
+    def __init__(self, bucket, key, regex, iterator, gzipped=False, buffer_size=io.DEFAULT_BUFFER_SIZE):
         self.key = key
         self.regex = regex
         self.iterator = iterator
         self._patterns = dict()
         self.bucket = bucket
         self.gzipped = gzipped
+        self.buffer_size = buffer_size
 
     def handle_content(self):
         pubsub, channel = create_pubsub('memory'), "chan1"
@@ -59,7 +73,10 @@ class SplitUploadS3:
                 json_output = os.path.join(self.key, f"data-{pattern}.json")
                 if self.gzipped:
                     json_output += ".gz"
-                uploading_thread = thread(self.bucket, pubsub, channel, pattern, json_output, gzipped=self.gzipped)
+                uploading_thread = thread(
+                    self.bucket, pubsub, channel, pattern,
+                    json_output, self.gzipped, self.buffer_size
+                )
                 self._patterns[pattern] = 1
                 uploading_thread.start()
             pubsub.publish(channel, (pattern, record))
@@ -94,41 +111,48 @@ def jsonize(dictionary):
     return json.dumps(stringify(dictionary))
 
 
+def iterable_to_stream(subscriber, pattern=None, buffer_size=io.DEFAULT_BUFFER_SIZE):
+    class IterStream(io.RawIOBase):
+        def __init__(self, subscriber=None, pattern=None):
+            self.leftover = None
+            self.subscriber = subscriber
+            self.pattern = pattern
+            self.done = False
+            self.next = lambda: next_valid_data(
+                    self.subscriber, self.pattern, self.done
+                ) if self.pattern else next(self.subscriber)
+
+        def readable(self):
+            return True
+
+        def next_chunk(self):
+            return jsonize(dict(self.next().items())) + "\n"
+
+        def readinto(self, b):
+            try:
+                l = len(b)  # We're supposed to return at most this much
+                chunk = self.leftover or self.next_chunk().encode()
+                output, self.leftover = chunk[:l], chunk[l:]
+                b[:len(output)] = output
+                return len(output)
+            except StopIteration:
+                self.done = True
+                return 0  # indicate EOF
+
+    return io.BufferedReader(IterStream(subscriber, pattern), buffer_size)
+
+
 class thread(threading.Thread):
-    def __init__(self, bucket, pubsub, channel, pattern, filename, gzipped=False, content=None):
+    def __init__(self, bucket, pubsub, channel, pattern, filename, gzipped=False, buffer_size=io.DEFAULT_BUFFER_SIZE):
         threading.Thread.__init__(self)
         self.subscriber = pubsub.subscribe(channel)
         self.pattern = pattern
         self.bucket = bucket
         self.filename = filename
         self.gzipped = gzipped
-
-    def iterable_to_stream(self, buffer_size=io.DEFAULT_BUFFER_SIZE):
-        class IterStream(io.RawIOBase):
-            def __init__(self, subscriber, pattern):
-                self.leftover = None
-                self.subscriber = subscriber
-                self.pattern = pattern
-                self.done = False
-
-            def readable(self):
-                return True
-
-            def next_chunk(self):
-                return jsonize(dict(next_valid_data(self.subscriber, self.pattern, self.done).items())) + "\n"
-
-            def readinto(self, b):
-                try:
-                    l = len(b)  # We're supposed to return at most this much
-                    chunk = self.leftover or self.next_chunk().encode()
-                    output, self.leftover = chunk[:l], chunk[l:]
-                    b[:len(output)] = output
-                    return len(output)
-                except StopIteration:
-                    self.done = True
-                    return 0  # indicate EOF
-
-        return io.BufferedReader(IterStream(self.subscriber, self.pattern), buffer_size=buffer_size)
+        self.buffer_size = buffer_size
 
     def run(self):
-        upload_stream(self.bucket, self.iterable_to_stream(), self.filename, gzipped=self.gzipped)
+        upload_stream(self.bucket,
+                      iterable_to_stream(self.subscriber, self.pattern, self.buffer_size),
+                      self.filename, gzipped=self.gzipped)
