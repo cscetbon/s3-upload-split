@@ -48,10 +48,10 @@ def upload_stream(bucket, stream, key, gzipped=False):
 
     resource_bucket.upload_fileobj(fp or stream, key, opts)
 
-    if gzipped:
-        resource_bucket.delete_objects(
-            Delete={"Objects": [{'Key': key[:-3]}]}
-        )
+    key_to_delete = key[:-3] if gzipped else f"{key}.gz"
+    resource_bucket.delete_objects(
+            Delete={"Objects": [{'Key': key_to_delete}]}
+    )
 
 
 class SplitUploadS3:

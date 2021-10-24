@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "s3-upload-split"
-version = "0.1.5"
+version = "0.1.6"
 description = "Streams the content of an iterator to multiple S3 objects based on a regular expression"
 authors = ["Cyril Scetbon <cscetbon@gmail.com>"]
 homepage = "https://github.com/cscetbon/s3-upload-split"
